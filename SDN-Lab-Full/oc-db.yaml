@@ -1,0 +1,169 @@
+#cloud-config
+#
+hostname: oc-db
+fqdn: oc-db.vcf.sddc.lab
+#
+#
+write_files:
+- path: /etc/netplan/50-cloud-init.yaml
+  content: |
+    network:
+     version: 2
+     ethernets:
+      ens192:
+       addresses: [10.1.1.50/27]
+       gateway4: 10.1.1.33
+       dhcp6: false
+       nameservers:
+         addresses:
+           - 10.0.0.221
+         search:
+           - vcf.sddc.lab
+       dhcp4: false
+       optional: true
+#
+#
+- path: /etc/sysctl.d/60-disable-ipv6.conf
+  owner: root
+  content: |
+    net.ipv6.conf.all.disable_ipv6=1
+    net.ipv6.conf.default.disable_ipv6=1
+    net.ipv6.conf.lo.disable_ipv6=1
+#
+#
+- path: /root/disable_ipv6.sh
+  permissions: 0744
+  owner: root
+  content: |
+    #!/usr/bin/env bash
+    set -e
+    echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
+    echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
+    echo "net.ipv6.conf.lo.disable_ipv6 = 1" >> /etc/sysctl.conf
+#
+#
+- path: /etc/hosts
+  content: 127.0.0.1 oc-db
+  append: true
+#
+#
+- path: /etc/cron.hourly/oc_cleanup
+  owner: root
+  permissions: '0777'
+  content: "mysql -u ocuser -D opencart -e 'delete from oc_session where oc_session.expire < DATE_SUB(NOW(), INTERVAL 360 DAY);'"
+#
+#
+- path: /etc/cron.daily/mysqlslowlogs
+  owner: root
+  permissions: '0666'
+  content: |
+        /var/lib/mysql/mysql-slow.log {
+        size 1G
+        dateext
+        compress
+        missingok
+        rotate 2
+        notifempty
+        delaycompress
+        sharedscripts
+        nocopytruncate
+        create 660 mysql mysql
+        postrotate
+        /usr/bin/mysql -e 'select @@global.slow_query_log into @sq_log_save; set global slow_query_log=off; select sleep(5); FLUSH SLOW LOGS; select sleep(10); set global slow_query_log=@sq_log_save;'
+        endscript
+        rotate 150
+        }
+#
+#
+runcmd:
+- bash /root/disable_ipv6.sh
+- /usr/sbin/netplan apply
+- /sbin/sysctl -w net.ipv6.conf.all.disable_ipv6=1
+- /sbin/sysctl -w net.ipv6.conf.default.disable_ipv6=1
+- /sbin/sysctl -w net.ipv6.conf.lo.disable_ipv6=1
+- export DEBIAN_Apache=noninteractive
+- export USER="ocuser"
+- export PASS="VMware123!"
+- /bin/echo $USER:$PASS | /usr/sbin/chpasswd
+- /bin/sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/g" /etc/ssh/sshd_config
+- /usr/sbin/service ssh reload
+#Begin MySQL specific customizations
+- /bin/echo "mysql-server-5.7 mysql-server/root_password password root" | sudo debconf-set-selections
+- /bin/echo "mysql-server-5.7 mysql-server/root_password_again password root" | sudo debconf-set-selections
+- /bin/echo "[client]" >> /etc/mysql/mysql.conf.d/mysqld.cnf
+- /bin/echo "user=root" >> /etc/mysql/mysql.conf.d/mysqld.cnf
+- /bin/echo "password=root" >> /etc/mysql/mysql.conf.d/mysqld.cnf
+- /bin/echo "user=ocuser" >> /etc/mysql/mysql.conf.d/mysqld.cnf
+- /bin/echo "password=$PASS" >> /etc/mysql/mysql.conf.d/mysqld.cnf
+- /bin/sed -i 's/#slow/slow/g' /etc/mysql/mysql.conf.d/mysqld.cnf
+- /bin/sed -i 's/#long_query_time/long_query_time/g' /etc/mysql/mysql.conf.d/mysqld.cnf
+- /bin/sed -i 's/bind-address/#bind-address/g' /etc/mysql/mysql.conf.d/mysqld.cnf
+- /bin/systemctl restart mysql
+- /usr/bin/mysql -u root -e "GRANT ALL ON *.* TO '$USER'@'%' IDENTIFIED BY '$PASS'"
+- /usr/bin/mysql -u root -e 'CREATE DATABASE opencart'
+- /usr/bin/mysql -u root -e 'USE opencart'
+- /usr/bin/mysql -u root -e 'flush privileges'
+#End MySQL specific config
+
+packages:
+  - apache2
+  - php
+  - php-mysql
+  - libapache2-mod-php
+  - php-cli
+  - php-common
+  - php-intl
+  - php-gd
+  - php-mbstring
+  - php-xml
+  - php-zip
+  - php-curl
+  - php-xmlrpc
+  - mysql-server-5.7
+  - mysql-client
+  - unzip
+  - open-vm-tools
+#
+timezone: America/Chicago
+#
+system_info:
+  default_user:
+    name: default-user
+    lock_passwd: false
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+#
+disable_root: false
+#
+ssh_pwauth: yes
+#
+users:
+  - default
+  - name: cloudadmin
+    gecos: Cloud
+    lock_passwd: false
+    groups: sudo, users, admin
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+  - name: ocuser
+    gecos: Opencart User
+    lock_passwd: false
+    groups: sudo, users, admin
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+
+chpasswd:
+  list: |
+    default-user: $6$rounds=4096$L2g1RTFocPEW$u.VUUpZKxik.Mr8l4XrZRAC5o0xiiNiWBy9gx.Vy5IkQxeIMAvzCbk2kU6yRHJhzMvdMSJ/VaStqoupJqkBfS0
+    ocuser: $6$rounds=4096$L2g1RTFocPEW$u.VUUpZKxik.Mr8l4XrZRAC5o0xiiNiWBy9gx.Vy5IkQxeIMAvzCbk2kU6yRHJhzMvdMSJ/VaStqoupJqkBfS0
+    cloudadmin: $6$rounds=4096$L2g1RTFocPEW$u.VUUpZKxik.Mr8l4XrZRAC5o0xiiNiWBy9gx.Vy5IkQxeIMAvzCbk2kU6yRHJhzMvdMSJ/VaStqoupJqkBfS0
+  expire: false
+#
+package_upgrade: true
+#
+package_reboot_if_required: true
+#
+power_state:
+  delay: now
+  mode: reboot
+  message: Rebooting the OS
+  condition: if [ -e /var/run/reboot-required ]; then exit 0; else exit 1; fi
